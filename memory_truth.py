@@ -58,9 +58,69 @@ def init_db():
         print("Schema Update: Added session_id to facts table.")
     except sqlite3.OperationalError:
         pass
+        
+    # 2026-01-03: Subquestion Coverage
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS subquestion_coverage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT DEFAULT (datetime('now')),
+            topic TEXT NOT NULL,
+            subquestion TEXT NOT NULL,
+            episode_ids TEXT DEFAULT '[]', -- JSON list
+            fact_ids TEXT DEFAULT '[]' -- JSON list
+        )
+    ''')
+    
+    try:
+        cursor.execute("ALTER TABLE subquestion_coverage ADD COLUMN normalized_subquestion TEXT")
+        print("Schema Update: Added normalized_subquestion to subquestion_coverage table.")
+    except sqlite3.OperationalError:
+        pass
 
     conn.commit()
     conn.close()
+
+# ... (omitted existing functions) ...
+
+def add_coverage(topic, subquestion, episode_ids, fact_ids, normalized_subquestion=None):
+    """Add a coverage record for a satisfied subquestion."""
+    import json
+    conn = connect()
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO subquestion_coverage (topic, subquestion, episode_ids, fact_ids, normalized_subquestion)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (topic, subquestion, json.dumps(episode_ids), json.dumps(fact_ids), normalized_subquestion))
+    cov_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return cov_id
+
+def get_coverage(topic, subquestion):
+    """Retrieve coverage for a specific topic and subquestion (Exact Match)."""
+    conn = connect()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT * FROM subquestion_coverage 
+        WHERE lower(topic) = lower(?) AND lower(subquestion) = lower(?)
+        ORDER BY id DESC LIMIT 1
+    ''', (topic, subquestion))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def get_coverage_by_topic(topic):
+    """Retrieve all coverage records for a topic."""
+    conn = connect()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT * FROM subquestion_coverage 
+        WHERE lower(topic) = lower(?)
+        ORDER BY id DESC
+    ''', (topic,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
 
 def add_episode(topic, notes, url=None, title=None, outcome='unknown', tags='', session_id=None):
     """Add a new episode to the database."""
@@ -188,6 +248,9 @@ def get_facts_by_topic_and_session(topic: str, session_id: str) -> list[dict]:
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+
 
 if __name__ == '__main__':
     # Initial setup when run directly

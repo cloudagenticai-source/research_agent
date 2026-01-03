@@ -107,10 +107,6 @@ def main():
                 print("Usage: python app.py research 'TOPIC'")
                 sys.exit(1)
             
-            if not os.environ.get("SERPAPI_API_KEY"):
-                print("Error: SERPAPI_API_KEY environment variable is not set.")
-                print("Please set it to run the research agent.")
-                sys.exit(1)
 
             topic = sys.argv[2]
             try:
@@ -119,6 +115,11 @@ def main():
                 print("\n\n=== RESEARCH SUMMARY ===")
                 print(f"Topic: {trace['topic']}")
                 print(f"Session ID: {trace.get('session_id', 'N/A')}")
+                print(f"Memory Reuse: {'YES' if trace.get('reused_memory') else 'NO'}")
+                print(f"Web Search Skipped: {'YES' if trace.get('web_calls_skipped') else 'NO'}")
+                print(f"Sub-question Statuses:")
+                for s in trace.get('subquestion_statuses', []):
+                    print(f"  - {s.get('question')}: {s.get('status')} ({s.get('rationale')})")
                 print(f"Skill: {trace['selected_skill']}")
                 print(f"Sub-questions: {len(trace['subquestions'])}")
                 for q in trace['subquestions']:
