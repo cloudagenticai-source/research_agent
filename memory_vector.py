@@ -11,8 +11,12 @@ class VectorMemory:
         self.client = OpenAI()
         
         # Initialize Chroma Persistent Client
+        # Initialize Chroma Persistent Client
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        chroma_path = os.path.join(base_dir, 'data', 'chroma')
+        
         self.chroma_client = chromadb.PersistentClient(
-            path="data/chroma",
+            path=chroma_path,
             settings=Settings(anonymized_telemetry=False)
         )
         
