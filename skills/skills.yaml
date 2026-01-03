@@ -12,6 +12,11 @@
     - Ensure every factual claim is supported by a citation.
     - Review the report for flow, clarity, and accuracy.
     - List any limitations or gaps in the found information at the end.
+  execution_policy:
+    freshness_days: 180
+    allow_web: true
+    max_sources: 5
+    reuse_memory: true
   guardrails:
     - Do not make factual claims without citing a source.
     - If sources disagree, present both and explain the conflict.
