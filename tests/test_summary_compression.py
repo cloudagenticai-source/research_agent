@@ -29,7 +29,7 @@ class TestSummaryCompression(unittest.TestCase):
         # 2. Coverage found for Q1
         c1 = {
             'subquestion': 'Q1', 
-            'created_at': '2025-01-01', 
+            'created_at': '2026-01-02', 
             'subquestion': 'Q1', 
             'normalized_subquestion': 'q1',
             'id': 1,

@@ -11,7 +11,8 @@ import router
 import web_search
 import web_fetch
 
-# Helper for detailed memory evaluation
+# --- PUBLIC HELPER FUNCTIONS (UNCHANGED) ---
+
 def evaluate_subquestions_against_memory(openai_client, topic, subquestions, episodic_ids, semantic_ids):
     """
     Evaluate subquestions against detailed memory evidence from SQLite.
@@ -124,7 +125,6 @@ def evaluate_subquestions_against_memory(openai_client, topic, subquestions, epi
         }
 
 
-# Helper for subquestion normalization
 def normalize_question(q: str) -> str:
     """Normalize question string for fuzzy matching."""
     if not q:
@@ -241,33 +241,9 @@ def compress_summaries(openai_client, topic, subquestion_statuses):
             
     return results
 
-# ... run_research ...
-def run_research(topic: str, max_sources: int = 5) -> dict:
-    """
-    Orchestrate the research process.
-    
-    Args:
-        topic: Research topic to investigate.
-        max_sources: Maximum number of sources to fetch and ingest.
-        
-    Returns:
-        dict: Execution trace including skill, subquestions, sources, and IDs.
-    """
-    print(f"--- Starting Research on: {topic} ---")
+# --- PRIVATE HELPER FUNCTIONS (EXTRACTED) ---
 
-    trace = {
-        "topic": topic,
-        "session_id": None, # Will be set later
-        "selected_skill": None,
-        "subquestions": [],
-        "sources_used": [],
-        "episode_ids": [],
-        "fact_ids": [],
-        "decision_gate_used": False,
-        "reused_memory": False,
-        "web_calls_skipped": False
-    }
-
+def _init_runtime(max_sources):
     # 1. Initialize
     memory_truth.init_db()
     vm = memory_vector.VectorMemory()
@@ -276,14 +252,15 @@ def run_research(topic: str, max_sources: int = 5) -> dict:
     # Generate Session ID
     session_id = str(uuid.uuid4())
     print(f"Research Session ID: {session_id}")
+    return vm, openai_client, session_id
 
-    trace["session_id"] = session_id
-    
+def _retrieve_context(vm, topic):
     # 2. Retrieve Context
     print("Retrieving context from memory...")
     context = router.retrieve_router(vm, topic)
+    return context
 
-    # 3. Planning
+def _select_skill_and_policy(context, max_sources):
     # 3. Planning & Policy
     active_policy = {
         "freshness_days": 180,
@@ -291,19 +268,20 @@ def run_research(topic: str, max_sources: int = 5) -> dict:
         "max_sources": max_sources,
         "reuse_memory": True
     }
+    selected_skill = None
 
     # Select Skill
     skill_ids = context.get('procedural', {}).get('ids', [])
     if skill_ids:
-        trace["selected_skill"] = skill_ids[0]
-        print(f"Selected Skill: {trace['selected_skill']}")
+        selected_skill = skill_ids[0]
+        print(f"Selected Skill: {selected_skill}")
         
         # Load Policy
         try:
             skills_path = os.path.join(os.path.dirname(__file__), 'skills', 'skills.yaml')
             all_skills = memory_builders.load_skills(skills_path)
             for s in all_skills:
-                if s['id'] == trace['selected_skill']:
+                if s['id'] == selected_skill:
                     if 'execution_policy' in s:
                         active_policy.update(s['execution_policy'])
                     break
@@ -313,15 +291,18 @@ def run_research(topic: str, max_sources: int = 5) -> dict:
     else:
         print("No specific skill found, proceeding with general research.")
         
-    trace["execution_policy"] = active_policy
     # Apply Overrides
-    max_sources = active_policy.get("max_sources", max_sources)
+    max_sources_after_policy = active_policy.get("max_sources", max_sources)
     print(f"Active Execution Policy: {active_policy}")
+    
+    return selected_skill, active_policy, max_sources_after_policy
 
+def _generate_subquestions(openai_client, topic):
     # Generate Sub-questions
     print("Generating sub-questions...")
     prompt = f"Topic: {topic}\n\nBased on this topic, generate 3-6 specific sub-questions to guide web research. Return ONLY a JSON object with a single key 'questions' containing a list of strings."
     
+    subquestions = []
     try:
         response = openai_client.chat.completions.create(
             model="gpt-4o",
@@ -330,38 +311,32 @@ def run_research(topic: str, max_sources: int = 5) -> dict:
         )
         content = response.choices[0].message.content
         data = json.loads(content)
-        trace["subquestions"] = data.get("questions", [])
+        subquestions = data.get("questions", [])
         
         # Fallback if list is empty
-        if not trace["subquestions"]:
-             trace["subquestions"] = [f"key facts about {topic}", f"recent developments in {topic}"]
+        if not subquestions:
+             subquestions = [f"key facts about {topic}", f"recent developments in {topic}"]
 
     except Exception as e:
         print(f"Error generating subquestions: {e}")
         # Fallback
-        trace["subquestions"] = [f"key facts about {topic}", f"recent developments in {topic}"]
+        subquestions = [f"key facts about {topic}", f"recent developments in {topic}"]
 
-    print(f"Sub-questions: {trace['subquestions']}")
-    
-    # --- DECISION GATE ---
-    print("Evaluating memory for answers (Deep Verification)...")
-    
-    # Extract IDs from router context
-    # Router returns {'ids': [...], 'documents': [...]} per category
+    print(f"Sub-questions: {subquestions}")
+    return subquestions
+
+def _flatten_router_ids(context):
     ep_ids = context.get('episodic', {}).get('ids', [])
     sem_ids = context.get('semantic', {}).get('ids', [])
     
-    # Note: Chroma might return list of lists if batch querying, but our router handles single query?
-    # Actually router.retrieve_router returns standard dict. 
-    # Let's ensure we handle flats lists.
-    # The default Chroma output for single query is ids=[['id1', 'id2']].
-    # Our router implementation flattens this? Let's check router.py.
-    # Checking router.py... it returns raw Chroma results. So ids is [[...]].
-    # We need to flatten.
-    
     flat_ep_ids = [item for sublist in ep_ids for item in sublist] if ep_ids and isinstance(ep_ids[0], list) else ep_ids
     flat_sem_ids = [item for sublist in sem_ids for item in sublist] if sem_ids and isinstance(sem_ids[0], list) else sem_ids
+    return flat_ep_ids, flat_sem_ids
 
+def _decision_gate(openai_client, topic, subquestions, flat_ep_ids, flat_sem_ids, active_policy):
+    # --- DECISION GATE ---
+    print("Evaluating memory for answers (Deep Verification)...")
+    
     decision = {
         "needs_web": False,
         "web_needed_for": [],
@@ -374,14 +349,14 @@ def run_research(topic: str, max_sources: int = 5) -> dict:
     should_reuse = active_policy.get("reuse_memory", True)
     if not should_reuse:
         print("Policy Override: reuse_memory=False. Skipping coverage check.")
-        uncovered_subquestions = list(trace["subquestions"])
+        uncovered_subquestions = list(subquestions)
     else:
         print("Checking for existing coverage...")
         
         # Cache all coverage for topic for fuzzy matching
         topic_coverage = memory_truth.get_coverage_by_topic(topic)
         
-        for q in trace["subquestions"]:
+        for q in subquestions:
             # 1. Exact Match
             cov = memory_truth.get_coverage(topic, q)
             
@@ -405,6 +380,41 @@ def run_research(topic: str, max_sources: int = 5) -> dict:
                 if best_score >= 0.8:
                     cov = best_match
                     print(f"  - Fuzzy Match ({best_score:.2f}): '{q}' ~= '{cov['subquestion']}'")
+            
+            if cov:
+                # Freshness Check
+                freshness_days = active_policy.get("freshness_days", 180)
+                is_stale = False
+                
+                if cov.get('created_at'):
+                    try:
+                        # Try parsing various formats
+                        created_dt = None
+                        c_str = str(cov['created_at'])
+                        for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]:
+                            try:
+                                created_dt = datetime.strptime(c_str, fmt)
+                                break
+                            except: pass
+                        
+                        if not created_dt:
+                            try:
+                                created_dt = datetime.fromisoformat(c_str)
+                            except: pass
+                        
+                        if created_dt:
+                            # SQLite datetime('now') is UTC. Compare with naive UTC.
+                            # Use abs() to handle minor clock skews or timezone confusions safely? 
+                            # No, assume created_at is past.
+                            age = (datetime.utcnow() - created_dt).days
+                            if age > freshness_days:
+                                print(f"  - Coverage stale (age={age} days > freshness_days={freshness_days}): {q}")
+                                is_stale = True
+                    except Exception as e:
+                        print(f"Warning checking freshness: {e}")
+
+                if is_stale:
+                    cov = None # Treat as uncovered
 
             if cov:
                 print(f"  - Covered: {q}")
@@ -444,13 +454,11 @@ def run_research(topic: str, max_sources: int = 5) -> dict:
     decision["web_needed_for"] = missing_qs
     
     print(f"Decision: Needs Web? {decision.get('needs_web')}")
-    trace["decision_gate_used"] = True
-    trace["needs_web"] = decision.get("needs_web", True)
-    trace["web_needed_for"] = decision.get("web_needed_for", [])
-    trace["subquestion_statuses"] = decision.get("subquestion_statuses", [])
-    
+    return decision
+
+def _persist_memory_coverage(topic, subquestion_statuses, flat_ep_ids, flat_sem_ids):
     # PERSISTENCE: Save coverage for questions satisfied by memory
-    for status in trace["subquestion_statuses"]:
+    for status in subquestion_statuses:
         if status.get("status") == "satisfied" and "Previously covered" not in status.get("rationale", ""):
             print(f"Saving coverage for memory-satisfied question: {status.get('question')}")
             
@@ -473,36 +481,18 @@ def run_research(topic: str, max_sources: int = 5) -> dict:
                 normalized_subquestion=normalize_question(status.get("question"))
             )
 
-    if not trace["needs_web"]:
-        trace["reused_memory"] = True
-        trace["web_calls_skipped"] = True
-        print(">>> Skipping Web Search: Memory is sufficient. <<<")
-        
-        # Summary Compression (Memory Only Path)
-        try:
-            trace["compressed_summaries"] = compress_summaries(
-                openai_client,
-                topic,
-                trace["subquestion_statuses"]
-            )
-        except Exception as e:
-             print(f"Summary compression failed: {e}")
-             trace["compressed_summaries"] = {}
-             
-        return trace
-    
-    trace["reused_memory"] = False
-    trace["web_calls_skipped"] = False
-    
+def _web_search_and_ingest(openai_client, vm, topic, session_id, web_needed_for, max_sources):
     # 4. Web Search (Conditional)
     unique_urls = set()
+    episode_ids = []
+    fact_ids = []
     
     # Check API Key before searching
     if not os.environ.get("SERPAPI_API_KEY"):
          raise ValueError("SERPAPI_API_KEY is required for web search but is not set.")
 
     # Only search for needed questions
-    search_queue = trace["web_needed_for"]
+    search_queue = web_needed_for
     print(f"Searching for {len(search_queue)} missing items...")
 
     for q in search_queue:
@@ -518,7 +508,6 @@ def run_research(topic: str, max_sources: int = 5) -> dict:
             print(f"Search failed for '{q}': {e}")
             
     sorted_urls = list(unique_urls)[:max_sources]
-    trace["sources_used"] = sorted_urls
     print(f"Found {len(sorted_urls)} sources.")
 
     # 5. Fetch & Ingest Episodes
@@ -552,7 +541,7 @@ def run_research(topic: str, max_sources: int = 5) -> dict:
             tags="research, web_source",
             session_id=session_id
         )
-        trace["episode_ids"].append(ep_id)
+        episode_ids.append(ep_id)
         
         # Upsert Episode
         ep = memory_truth.get_episode(ep_id)
@@ -599,7 +588,7 @@ def run_research(topic: str, max_sources: int = 5) -> dict:
                     source_url=url,
                     session_id=session_id
                 )
-                trace["fact_ids"].append(fid)
+                fact_ids.append(fid)
                 
                 # Upsert Fact
                 db_fact = memory_truth.get_fact(fid)
@@ -609,18 +598,19 @@ def run_research(topic: str, max_sources: int = 5) -> dict:
             
         except Exception as e:
             print(f"Fact extraction failed for episode {ep_id}: {e}")
+    
+    return sorted_urls, episode_ids, fact_ids
 
+def _persist_web_coverage_and_update_statuses(topic, web_needed_for, new_episode_ids, new_fact_ids, subquestion_statuses):
     # PERSISTENCE: Save coverage for questions answered by Web
     # Assumes the new research covers the questions asked
-    new_ep_ids = trace["episode_ids"]
-    new_fact_ids = trace["fact_ids"]
-    if new_ep_ids:
-        for q in trace["web_needed_for"]:
+    if new_episode_ids:
+        for q in web_needed_for:
             print(f"Saving coverage for web-answered question: {q}")
             memory_truth.add_coverage(
                 topic,
                 q,
-                new_ep_ids,
+                new_episode_ids,
                 new_fact_ids,
                 normalized_subquestion=normalize_question(q)
             )
@@ -628,20 +618,21 @@ def run_research(topic: str, max_sources: int = 5) -> dict:
             # TRACE CONSISTENCY: Update status to satisfied
             # Find existing status entry or create new one
             found_status = False
-            for status in trace["subquestion_statuses"]:
+            for status in subquestion_statuses:
                 if status["question"] == q:
                     status["status"] = "satisfied"
-                    status["rationale"] = f"Answered via web in this session (episodes: {new_ep_ids})"
+                    status["rationale"] = f"Answered via web in this session (episodes: {new_episode_ids})"
                     found_status = True
                     break
             
             if not found_status:
-                trace["subquestion_statuses"].append({
+                subquestion_statuses.append({
                     "question": q,
                     "status": "satisfied",
-                    "rationale": f"Answered via web in this session (episodes: {new_ep_ids})"
+                    "rationale": f"Answered via web in this session (episodes: {new_episode_ids})"
                 })
 
+def _attach_compressed_summaries(openai_client, trace, topic):
     # 7. Summary Compression
     try:
         trace["compressed_summaries"] = compress_summaries(
@@ -653,6 +644,92 @@ def run_research(topic: str, max_sources: int = 5) -> dict:
          print(f"Summary compression failed: {e}")
          trace["compressed_summaries"] = {}
 
+# --- MAIN ORCHESTRATOR ---
+
+def run_research(topic: str, max_sources: int = 5) -> dict:
+    """
+    Orchestrate the research process.
+    
+    Args:
+        topic: Research topic to investigate.
+        max_sources: Maximum number of sources to fetch and ingest.
+        
+    Returns:
+        dict: Execution trace including skill, subquestions, sources, and IDs.
+    """
+    print(f"--- Starting Research on: {topic} ---")
+    
+    # Init Trace
+    trace = {
+        "topic": topic,
+        "session_id": None, # Will be set later
+        "selected_skill": None,
+        "subquestions": [],
+        "sources_used": [],
+        "episode_ids": [],
+        "fact_ids": [],
+        "decision_gate_used": False,
+        "reused_memory": False,
+        "web_calls_skipped": False
+    }
+
+    # 1. Runtime
+    vm, openai_client, session_id = _init_runtime(max_sources)
+    trace["session_id"] = session_id
+    
+    # 2. Context
+    context = _retrieve_context(vm, topic)
+    
+    # 3. Policy & Skill
+    selected_skill, active_policy, max_sources = _select_skill_and_policy(context, max_sources)
+    trace["selected_skill"] = selected_skill
+    trace["execution_policy"] = active_policy
+    
+    # 4. Subquestions
+    trace["subquestions"] = _generate_subquestions(openai_client, topic)
+    
+    # 5. Flatten IDs
+    flat_ep_ids, flat_sem_ids = _flatten_router_ids(context)
+
+    # 6. Decision Gate
+    decision = _decision_gate(openai_client, topic, trace["subquestions"], flat_ep_ids, flat_sem_ids, active_policy)
+    trace["decision_gate_used"] = True
+    trace["needs_web"] = decision.get("needs_web", True)
+    trace["web_needed_for"] = decision.get("web_needed_for", [])
+    trace["subquestion_statuses"] = decision.get("subquestion_statuses", [])
+    
+    # 7. Persist Memory Coverage
+    _persist_memory_coverage(topic, trace["subquestion_statuses"], flat_ep_ids, flat_sem_ids)
+    
+    # 8. Check if Web Needed
+    if not trace["needs_web"]:
+        trace["reused_memory"] = True
+        trace["web_calls_skipped"] = True
+        print(">>> Skipping Web Search: Memory is sufficient. <<<")
+        
+        _attach_compressed_summaries(openai_client, trace, topic)
+        print("--- Research Completed ---")
+        return trace
+        
+    trace["reused_memory"] = False
+    trace["web_calls_skipped"] = False
+    
+    # 9. Web Search
+    sources_used, new_ep_ids, new_fact_ids = _web_search_and_ingest(
+        openai_client, vm, topic, session_id, trace["web_needed_for"], max_sources
+    )
+    trace["sources_used"] = sources_used
+    trace["episode_ids"] = new_ep_ids
+    trace["fact_ids"] = new_fact_ids
+    
+    # 10. Persist Web Coverage
+    _persist_web_coverage_and_update_statuses(
+        topic, trace["web_needed_for"], new_ep_ids, new_fact_ids, trace["subquestion_statuses"]
+    )
+    
+    # 11. Final Summary Compression
+    _attach_compressed_summaries(openai_client, trace, topic)
+    
     print("--- Research Completed ---")
     return trace
 
