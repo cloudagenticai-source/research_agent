@@ -36,3 +36,25 @@
 ```bash
 python app.py
 ```
+
+## Interactive UI
+
+You can also run the agent with a modern web interface.
+
+### 1. Start the Backend
+```bash
+cd backend
+pip install -r requirements.txt
+uvicorn main:app --reload --port 8000
+```
+
+### 2. Start the Frontend
+In a new terminal:
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open your browser to `http://localhost:5173` to start researching!
+
