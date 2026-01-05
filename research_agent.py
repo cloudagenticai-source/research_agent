@@ -10,8 +10,15 @@ import memory_vector
 import router
 import web_search
 import web_fetch
+from typing import Optional, Callable
 
 # --- PUBLIC HELPER FUNCTIONS (UNCHANGED) ---
+
+def _emit(on_event: Optional[Callable[[str], None]], msg: str):
+    """Helper to emit streaming events while preserving console output."""
+    if on_event:
+        on_event(msg)
+    print(msg)
 
 def evaluate_subquestions_against_memory(openai_client, topic, subquestions, episodic_ids, semantic_ids):
     """
@@ -151,12 +158,12 @@ def calculate_jaccard_similarity(s1: str, s2: str) -> float:
     union = len(set1.union(set2))
     return intersection / union
 
-def compress_summaries(openai_client, topic, subquestion_statuses):
+def compress_summaries(openai_client, topic, subquestion_statuses, on_event: Optional[Callable[[str], None]] = None):
     """
     Generate compressed summaries using ONLY memory.
     """
     results = {}
-    print("Compressing summaries for satisfied questions...")
+    _emit(on_event, "Compressing summaries for satisfied questions...")
 
     # Cache topic coverage for fuzzy fallback
     all_coverage = None 
@@ -193,7 +200,7 @@ def compress_summaries(openai_client, topic, subquestion_statuses):
                 cov = best_match
         
         if not cov:
-            print(f"Skipping summary for '{q}': No coverage record found.")
+            _emit(on_event, f"Skipping summary for '{q}': No coverage record found.")
             continue
             
         # 2. Results
@@ -237,13 +244,13 @@ def compress_summaries(openai_client, topic, subquestion_statuses):
                 "fact_ids": fact_ids
             }
         except Exception as e:
-            print(f"Summary failed for {q}: {e}")
+            _emit(on_event, f"Summary failed for {q}: {e}")
             
     return results
 
 # --- PRIVATE HELPER FUNCTIONS (EXTRACTED) ---
 
-def _init_runtime(max_sources):
+def _init_runtime(max_sources, on_event: Optional[Callable[[str], None]] = None):
     # 1. Initialize
     memory_truth.init_db()
     vm = memory_vector.VectorMemory()
@@ -251,16 +258,16 @@ def _init_runtime(max_sources):
 
     # Generate Session ID
     session_id = str(uuid.uuid4())
-    print(f"Research Session ID: {session_id}")
+    _emit(on_event, f"Research Session ID: {session_id}")
     return vm, openai_client, session_id
 
-def _retrieve_context(vm, topic):
+def _retrieve_context(vm, topic, on_event: Optional[Callable[[str], None]] = None):
     # 2. Retrieve Context
-    print("Retrieving context from memory...")
+    _emit(on_event, "Retrieving context from memory...")
     context = router.retrieve_router(vm, topic)
     return context
 
-def _select_skill_and_policy(context, max_sources):
+def _select_skill_and_policy(context, max_sources, on_event: Optional[Callable[[str], None]] = None):
     # 3. Planning & Policy
     active_policy = {
         "freshness_days": 180,
@@ -274,7 +281,7 @@ def _select_skill_and_policy(context, max_sources):
     skill_ids = context.get('procedural', {}).get('ids', [])
     if skill_ids:
         selected_skill = skill_ids[0]
-        print(f"Selected Skill: {selected_skill}")
+        _emit(on_event, f"Selected Skill: {selected_skill}")
         
         # Load Policy
         try:
@@ -286,20 +293,20 @@ def _select_skill_and_policy(context, max_sources):
                         active_policy.update(s['execution_policy'])
                     break
         except Exception as e:
-            print(f"Warning: Could not load execution policy: {e}")
+            _emit(on_event, f"Warning: Could not load execution policy: {e}")
 
     else:
-        print("No specific skill found, proceeding with general research.")
+        _emit(on_event, "No specific skill found, proceeding with general research.")
         
     # Apply Overrides
     max_sources_after_policy = active_policy.get("max_sources", max_sources)
-    print(f"Active Execution Policy: {active_policy}")
+    _emit(on_event, f"Active Execution Policy: {active_policy}")
     
     return selected_skill, active_policy, max_sources_after_policy
 
-def _generate_subquestions(openai_client, topic):
+def _generate_subquestions(openai_client, topic, on_event: Optional[Callable[[str], None]] = None):
     # Generate Sub-questions
-    print("Generating sub-questions...")
+    _emit(on_event, "Generating sub-questions...")
     prompt = f"Topic: {topic}\n\nBased on this topic, generate 3-6 specific sub-questions to guide web research. Return ONLY a JSON object with a single key 'questions' containing a list of strings."
     
     subquestions = []
@@ -318,11 +325,11 @@ def _generate_subquestions(openai_client, topic):
              subquestions = [f"key facts about {topic}", f"recent developments in {topic}"]
 
     except Exception as e:
-        print(f"Error generating subquestions: {e}")
+        _emit(on_event, f"Error generating subquestions: {e}")
         # Fallback
         subquestions = [f"key facts about {topic}", f"recent developments in {topic}"]
 
-    print(f"Sub-questions: {subquestions}")
+    _emit(on_event, f"Sub-questions: {subquestions}")
     return subquestions
 
 def _flatten_router_ids(context):
@@ -333,9 +340,9 @@ def _flatten_router_ids(context):
     flat_sem_ids = [item for sublist in sem_ids for item in sublist] if sem_ids and isinstance(sem_ids[0], list) else sem_ids
     return flat_ep_ids, flat_sem_ids
 
-def _decision_gate(openai_client, topic, subquestions, flat_ep_ids, flat_sem_ids, active_policy):
+def _decision_gate(openai_client, topic, subquestions, flat_ep_ids, flat_sem_ids, active_policy, on_event: Optional[Callable[[str], None]] = None):
     # --- DECISION GATE ---
-    print("Evaluating memory for answers (Deep Verification)...")
+    _emit(on_event, "Evaluating memory for answers (Deep Verification)...")
     
     decision = {
         "needs_web": False,
@@ -348,10 +355,10 @@ def _decision_gate(openai_client, topic, subquestions, flat_ep_ids, flat_sem_ids
     
     should_reuse = active_policy.get("reuse_memory", True)
     if not should_reuse:
-        print("Policy Override: reuse_memory=False. Skipping coverage check.")
+        _emit(on_event, "Policy Override: reuse_memory=False. Skipping coverage check.")
         uncovered_subquestions = list(subquestions)
     else:
-        print("Checking for existing coverage...")
+        _emit(on_event, "Checking for existing coverage...")
         
         # Cache all coverage for topic for fuzzy matching
         topic_coverage = memory_truth.get_coverage_by_topic(topic)
@@ -377,9 +384,9 @@ def _decision_gate(openai_client, topic, subquestions, flat_ep_ids, flat_sem_ids
                         best_score = score
                         best_match = row
                 
-                if best_score >= 0.8:
+                if best_score >= 0.5:
                     cov = best_match
-                    print(f"  - Fuzzy Match ({best_score:.2f}): '{q}' ~= '{cov['subquestion']}'")
+                    _emit(on_event, f"  - Fuzzy Match ({best_score:.2f}): '{q}' ~= '{cov['subquestion']}'")
             
             if cov:
                 # Freshness Check
@@ -408,16 +415,16 @@ def _decision_gate(openai_client, topic, subquestions, flat_ep_ids, flat_sem_ids
                             # No, assume created_at is past.
                             age = (datetime.utcnow() - created_dt).days
                             if age > freshness_days:
-                                print(f"  - Coverage stale (age={age} days > freshness_days={freshness_days}): {q}")
+                                _emit(on_event, f"  - Coverage stale (age={age} days > freshness_days={freshness_days}): {q}")
                                 is_stale = True
                     except Exception as e:
-                        print(f"Warning checking freshness: {e}")
+                        _emit(on_event, f"Warning checking freshness: {e}")
 
                 if is_stale:
                     cov = None # Treat as uncovered
 
             if cov:
-                print(f"  - Covered: {q}")
+                _emit(on_event, f"  - Covered: {q}")
                 decision["subquestion_statuses"].append({
                     "question": q,
                     "status": "satisfied",
@@ -449,18 +456,18 @@ def _decision_gate(openai_client, topic, subquestions, flat_ep_ids, flat_sem_ids
     
     # Enforce Policy
     if not active_policy.get("allow_web", True):
-        print("Policy Override: allow_web=False. Forcing needs_web=False.")
+        _emit(on_event, "Policy Override: allow_web=False. Forcing needs_web=False.")
         decision["needs_web"] = False
     decision["web_needed_for"] = missing_qs
     
-    print(f"Decision: Needs Web? {decision.get('needs_web')}")
+    _emit(on_event, f"Decision: Needs Web? {decision.get('needs_web')}")
     return decision
 
-def _persist_memory_coverage(topic, subquestion_statuses, flat_ep_ids, flat_sem_ids):
+def _persist_memory_coverage(topic, subquestion_statuses, flat_ep_ids, flat_sem_ids, on_event: Optional[Callable[[str], None]] = None):
     # PERSISTENCE: Save coverage for questions satisfied by memory
     for status in subquestion_statuses:
         if status.get("status") == "satisfied" and "Previously covered" not in status.get("rationale", ""):
-            print(f"Saving coverage for memory-satisfied question: {status.get('question')}")
+            _emit(on_event, f"Saving coverage for memory-satisfied question: {status.get('question')}")
             
             # Convert Chroma IDs (strings) to Integer IDs for storage
             ep_ints = []
@@ -481,7 +488,7 @@ def _persist_memory_coverage(topic, subquestion_statuses, flat_ep_ids, flat_sem_
                 normalized_subquestion=normalize_question(status.get("question"))
             )
 
-def _web_search_and_ingest(openai_client, vm, topic, session_id, web_needed_for, max_sources):
+def _web_search_and_ingest(openai_client, vm, topic, session_id, web_needed_for, max_sources, on_event: Optional[Callable[[str], None]] = None):
     # 4. Web Search (Conditional)
     unique_urls = set()
     episode_ids = []
@@ -493,12 +500,12 @@ def _web_search_and_ingest(openai_client, vm, topic, session_id, web_needed_for,
 
     # Only search for needed questions
     search_queue = web_needed_for
-    print(f"Searching for {len(search_queue)} missing items...")
+    _emit(on_event, f"Searching for {len(search_queue)} missing items...")
 
     for q in search_queue:
         if len(unique_urls) >= max_sources:
             break
-        print(f"Searching: {q}")
+        _emit(on_event, f"Searching: {q}")
         try:
             results = web_search.search_web(q, num_results=3)
             for res in results:
@@ -508,15 +515,15 @@ def _web_search_and_ingest(openai_client, vm, topic, session_id, web_needed_for,
             print(f"Search failed for '{q}': {e}")
             
     sorted_urls = list(unique_urls)[:max_sources]
-    print(f"Found {len(sorted_urls)} sources.")
+    _emit(on_event, f"Found {len(sorted_urls)} sources.")
 
     # 5. Fetch & Ingest Episodes
     for url in sorted_urls:
-        print(f"Fetching: {url}")
+        _emit(on_event, f"Fetching: {url}")
         page_data = web_fetch.fetch_page(url)
         
         if not page_data['text']:
-            print(f"Skipping {url}: No text content.")
+            _emit(on_event, f"Skipping {url}: No text content.")
             continue
 
         # Extract Summary
@@ -528,7 +535,7 @@ def _web_search_and_ingest(openai_client, vm, topic, session_id, web_needed_for,
             )
             summary = summary_resp.choices[0].message.content
         except Exception as e:
-            print(f"Summarization failed for {url}: {e}")
+            _emit(on_event, f"Summarization failed for {url}: {e}")
             summary = "Summary generation failed."
 
         # Add Episode
@@ -547,10 +554,10 @@ def _web_search_and_ingest(openai_client, vm, topic, session_id, web_needed_for,
         ep = memory_truth.get_episode(ep_id)
         canon = memory_builders.episode_canonical(ep)
         vm.upsert_episode(ep_id, canon, {"topic": topic, "source": "web", "session_id": session_id})
-        print(f"Ingested episode {ep_id}")
+        _emit(on_event, f"Ingested episode {ep_id}")
 
         # 6. Extract & Ingest Facts
-        print(f"Extracting facts from episode {ep_id}...")
+        _emit(on_event, f"Extracting facts from episode {ep_id}...")
         fact_prompt = (
             f"Extract 5-12 key semantic facts from the text below as JSON triples.\n"
             f"Return ONLY a JSON object with a single key 'facts' containing a list of objects.\n"
@@ -594,19 +601,19 @@ def _web_search_and_ingest(openai_client, vm, topic, session_id, web_needed_for,
                 db_fact = memory_truth.get_fact(fid)
                 f_canon = memory_builders.fact_canonical(db_fact)
                 vm.upsert_fact(fid, f_canon, {"topic": topic, "type": "derived_fact", "session_id": session_id})
-            print(f"Extracted {len(facts_data)} facts.")
+            _emit(on_event, f"Extracted {len(facts_data)} facts.")
             
         except Exception as e:
-            print(f"Fact extraction failed for episode {ep_id}: {e}")
+            _emit(on_event, f"Fact extraction failed for episode {ep_id}: {e}")
     
     return sorted_urls, episode_ids, fact_ids
 
-def _persist_web_coverage_and_update_statuses(topic, web_needed_for, new_episode_ids, new_fact_ids, subquestion_statuses):
+def _persist_web_coverage_and_update_statuses(topic, web_needed_for, new_episode_ids, new_fact_ids, subquestion_statuses, on_event: Optional[Callable[[str], None]] = None):
     # PERSISTENCE: Save coverage for questions answered by Web
     # Assumes the new research covers the questions asked
     if new_episode_ids:
         for q in web_needed_for:
-            print(f"Saving coverage for web-answered question: {q}")
+            _emit(on_event, f"Saving coverage for web-answered question: {q}")
             memory_truth.add_coverage(
                 topic,
                 q,
@@ -632,21 +639,22 @@ def _persist_web_coverage_and_update_statuses(topic, web_needed_for, new_episode
                     "rationale": f"Answered via web in this session (episodes: {new_episode_ids})"
                 })
 
-def _attach_compressed_summaries(openai_client, trace, topic):
+def _attach_compressed_summaries(openai_client, trace, topic, on_event: Optional[Callable[[str], None]] = None):
     # 7. Summary Compression
     try:
         trace["compressed_summaries"] = compress_summaries(
             openai_client,
             topic,
-            trace["subquestion_statuses"]
+            trace["subquestion_statuses"],
+            on_event=on_event
         )
     except Exception as e:
-         print(f"Summary compression failed: {e}")
+         _emit(on_event, f"Summary compression failed: {e}")
          trace["compressed_summaries"] = {}
 
 # --- MAIN ORCHESTRATOR ---
 
-def run_research(topic: str, max_sources: int = 5) -> dict:
+def run_research(topic: str, max_sources: int = 5, on_event: Optional[Callable[[str], None]] = None) -> dict:
     """
     Orchestrate the research process.
     
@@ -654,10 +662,11 @@ def run_research(topic: str, max_sources: int = 5) -> dict:
         topic: Research topic to investigate.
         max_sources: Maximum number of sources to fetch and ingest.
         
+        on_event: Optional callback for streaming logs.
     Returns:
         dict: Execution trace including skill, subquestions, sources, and IDs.
     """
-    print(f"--- Starting Research on: {topic} ---")
+    _emit(on_event, f"--- Starting Research on: {topic} ---")
     
     # Init Trace
     trace = {
@@ -670,45 +679,59 @@ def run_research(topic: str, max_sources: int = 5) -> dict:
         "fact_ids": [],
         "decision_gate_used": False,
         "reused_memory": False,
-        "web_calls_skipped": False
+        "web_calls_skipped": False,
+        "memory_stats": {
+            "total_questions": 0,
+            "covered_count": 0,
+            "percent": 0.0
+        }
     }
 
     # 1. Runtime
-    vm, openai_client, session_id = _init_runtime(max_sources)
+    vm, openai_client, session_id = _init_runtime(max_sources, on_event=on_event)
     trace["session_id"] = session_id
     
     # 2. Context
-    context = _retrieve_context(vm, topic)
+    context = _retrieve_context(vm, topic, on_event=on_event)
     
     # 3. Policy & Skill
-    selected_skill, active_policy, max_sources = _select_skill_and_policy(context, max_sources)
+    selected_skill, active_policy, max_sources = _select_skill_and_policy(context, max_sources, on_event=on_event)
     trace["selected_skill"] = selected_skill
     trace["execution_policy"] = active_policy
     
     # 4. Subquestions
-    trace["subquestions"] = _generate_subquestions(openai_client, topic)
+    trace["subquestions"] = _generate_subquestions(openai_client, topic, on_event=on_event)
     
     # 5. Flatten IDs
     flat_ep_ids, flat_sem_ids = _flatten_router_ids(context)
 
     # 6. Decision Gate
-    decision = _decision_gate(openai_client, topic, trace["subquestions"], flat_ep_ids, flat_sem_ids, active_policy)
+    decision = _decision_gate(openai_client, topic, trace["subquestions"], flat_ep_ids, flat_sem_ids, active_policy, on_event=on_event)
     trace["decision_gate_used"] = True
     trace["needs_web"] = decision.get("needs_web", True)
     trace["web_needed_for"] = decision.get("web_needed_for", [])
     trace["subquestion_statuses"] = decision.get("subquestion_statuses", [])
     
+    # 6.5 Calculate Memory Stats
+    total_q = len(trace["subquestions"])
+    covered_q = sum(1 for s in decision["subquestion_statuses"] if s.get("status") == "satisfied")
+    trace["memory_stats"] = {
+        "total_questions": total_q,
+        "covered_count": covered_q,
+        "percent": round((covered_q / total_q) * 100, 1) if total_q > 0 else 0.0
+    }
+
     # 7. Persist Memory Coverage
-    _persist_memory_coverage(topic, trace["subquestion_statuses"], flat_ep_ids, flat_sem_ids)
+    _persist_memory_coverage(topic, trace["subquestion_statuses"], flat_ep_ids, flat_sem_ids, on_event=on_event)
     
     # 8. Check if Web Needed
     if not trace["needs_web"]:
         trace["reused_memory"] = True
         trace["web_calls_skipped"] = True
-        print(">>> Skipping Web Search: Memory is sufficient. <<<")
+        _emit(on_event, ">>> Skipping Web Search: Memory is sufficient. <<<")
         
-        _attach_compressed_summaries(openai_client, trace, topic)
-        print("--- Research Completed ---")
+        _attach_compressed_summaries(openai_client, trace, topic, on_event=on_event)
+        _emit(on_event, "--- Research Completed ---")
         return trace
         
     trace["reused_memory"] = False
@@ -716,7 +739,7 @@ def run_research(topic: str, max_sources: int = 5) -> dict:
     
     # 9. Web Search
     sources_used, new_ep_ids, new_fact_ids = _web_search_and_ingest(
-        openai_client, vm, topic, session_id, trace["web_needed_for"], max_sources
+        openai_client, vm, topic, session_id, trace["web_needed_for"], max_sources, on_event=on_event
     )
     trace["sources_used"] = sources_used
     trace["episode_ids"] = new_ep_ids
@@ -724,13 +747,13 @@ def run_research(topic: str, max_sources: int = 5) -> dict:
     
     # 10. Persist Web Coverage
     _persist_web_coverage_and_update_statuses(
-        topic, trace["web_needed_for"], new_ep_ids, new_fact_ids, trace["subquestion_statuses"]
+        topic, trace["web_needed_for"], new_ep_ids, new_fact_ids, trace["subquestion_statuses"], on_event=on_event
     )
     
     # 11. Final Summary Compression
-    _attach_compressed_summaries(openai_client, trace, topic)
+    _attach_compressed_summaries(openai_client, trace, topic, on_event=on_event)
     
-    print("--- Research Completed ---")
+    _emit(on_event, "--- Research Completed ---")
     return trace
 
 if __name__ == "__main__":
