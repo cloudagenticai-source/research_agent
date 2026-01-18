@@ -211,53 +211,53 @@ function App() {
     const dateTimeFormat = new Intl.DateTimeFormat(undefined, { month: "short", day: "2-digit", hour: "numeric", minute: "2-digit" })
 
     return (
-        <div className="page">
-            <div className="app-layout">
-                <aside className="sidebar">
-                    <div className="sidebar-title">Researched Topics</div>
-                    <div className="topic-list">
-                        {history.map(item => (
-                            <div
-                                key={item.ts}
-                                className="history-item"
-                                onClick={() => {
-                                    if (isBusy) return;
-                                    setTopic(item.topic)
-                                    if (item.summary) {
-                                        setSummary(item.summary)
-                                        setStatus("completed")
-                                        setLogs([])
-                                    }
-                                }}
-                            >
-                                <div className="history-left">
-                                    <div className="history-topic">{item.topic}</div>
-                                    <div className="history-date">{dateTimeFormat.format(new Date(item.ts))}</div>
-                                </div>
-
-                                <button
-                                    className="run-report-btn"
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        if (isBusy) return;
-                                        setTopic(item.topic);
-                                        startResearch("report", item.topic);
-                                    }}
-                                    disabled={isBusy}
-                                    aria-label={`Run Report for ${item.topic}`}
-                                >
-                                    <span className="run-report-label">
-                                        <span>Run</span>
-                                        <span>Report</span>
-                                    </span>
-                                </button>
+        <div className="app-shell">
+            <aside className="sidebar">
+                <div className="sidebar-title">Researched Topics</div>
+                <div className="topic-list">
+                    {history.map(item => (
+                        <div
+                            key={item.ts}
+                            className="history-item"
+                            onClick={() => {
+                                if (isBusy) return;
+                                setTopic(item.topic)
+                                if (item.summary) {
+                                    setSummary(item.summary)
+                                    setStatus("completed")
+                                    setLogs([])
+                                }
+                            }}
+                        >
+                            <div className="history-left">
+                                <div className="history-topic">{item.topic}</div>
+                                <div className="history-date">{dateTimeFormat.format(new Date(item.ts))}</div>
                             </div>
-                        ))}
-                        {history.length === 0 && <div style={{ fontSize: '0.8rem', color: '#666', padding: '10px' }}>No history yet.</div>}
-                    </div>
-                </aside>
 
-                <main className="main">
+                            <button
+                                className="run-report-btn"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (isBusy) return;
+                                    setTopic(item.topic);
+                                    startResearch("report", item.topic);
+                                }}
+                                disabled={isBusy}
+                                aria-label={`Run Report for ${item.topic}`}
+                            >
+                                <span className="run-report-label">
+                                    <span>Run</span>
+                                    <span>Report</span>
+                                </span>
+                            </button>
+                        </div>
+                    ))}
+                    {history.length === 0 && <div style={{ fontSize: '0.8rem', color: '#666', padding: '10px' }}>No history yet.</div>}
+                </div>
+            </aside>
+
+            <main className="main">
+                <header className="main-header">
                     <h1>Research Agent</h1>
 
                     <div className="card">
@@ -286,7 +286,9 @@ function App() {
                             </div>
                         </div>
                     )}
+                </header>
 
+                <div className="main-scroll">
                     {runMode !== "report" && status === "running" && logs.length > 0 && (
                         <div className="thinking">
                             <div className="thinking-title">Thinking…</div>
@@ -329,8 +331,8 @@ function App() {
                             </details>
                         </div>
                     )}
-                </main>
-            </div>
+                </div>
+            </main>
         </div>
     )
 }
