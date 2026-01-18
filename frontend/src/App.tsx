@@ -38,6 +38,9 @@ function App() {
 
     const eventSourceRef = useRef<EventSource | null>(null)
     const logEndRef = useRef<HTMLDivElement>(null)
+    const progressTimer = useRef<ReturnType<typeof setInterval> | null>(null)
+
+    const [reportProgress, setReportProgress] = useState(0)
 
     // Load history once on mount
     useEffect(() => {
@@ -80,6 +83,20 @@ function App() {
         setStatus("running")
         setRunMode(mode)
 
+        // Progress Logic for Report Mode
+        if (mode === "report") {
+            setReportProgress(1)
+            if (progressTimer.current) clearInterval(progressTimer.current)
+            progressTimer.current = setInterval(() => {
+                setReportProgress(prev => {
+                    if (prev >= 98) return prev
+                    return prev + 1
+                })
+            }, 500)
+        } else {
+            setReportProgress(0)
+        }
+
         // Close existing
         if (eventSourceRef.current) {
             eventSourceRef.current.close()
@@ -94,6 +111,19 @@ function App() {
             try {
                 const data = JSON.parse(e.data)
                 setLogs(prev => [...prev, data.line])
+
+                // Check for milestones in report mode
+                if (mode === "report" && data.line) {
+                    const l = data.line
+                    if (l.includes("Initializing report writer")) setReportProgress(5)
+                    else if (l.includes("Retrieving memory context")) setReportProgress(15)
+                    else if (l.includes("Analyzing and ranking episodic")) setReportProgress(30)
+                    else if (l.includes("Analyzing and ranking semantic")) setReportProgress(45)
+                    else if (l.includes("Assembling context")) setReportProgress(60)
+                    else if (l.includes("Generating report via LLM")) setReportProgress(75)
+                    else if (l.includes("Validating citations")) setReportProgress(90)
+                    else if (l.includes("Report generation complete")) setReportProgress(98)
+                }
             } catch (err) {
                 console.error("Error parsing log:", err)
             }
@@ -113,6 +143,12 @@ function App() {
                 setSummary(data)
                 setStatus("completed")
                 setLastRunType(completionMode)
+
+                // 100% on completion
+                if (completionMode === "report") {
+                    setReportProgress(100)
+                    if (progressTimer.current) clearInterval(progressTimer.current)
+                }
 
                 // Update History (Deduplicate by normalized topic)
                 setHistory(prev => {
@@ -154,9 +190,21 @@ function App() {
                 // But 'error' fires on close too, so we just close to be safe.
                 // If we really errored, the backend sends a JSON payload first usually.
                 es.close()
+
+                if (mode === "report") {
+                    if (progressTimer.current) clearInterval(progressTimer.current);
+                    setReportProgress(0);
+                }
             }
         })
     }
+
+    // Cleanup timer on unmount
+    useEffect(() => {
+        return () => {
+            if (progressTimer.current) clearInterval(progressTimer.current)
+        }
+    }, [])
 
     const isBusy = status === "running" || runMode === "report"; // Report mode also blocks
 
@@ -226,9 +274,16 @@ function App() {
                     </div>
 
                     {runMode === "report" && status === "running" && (
-                        <div className="report-status">
-                            <span className="report-dot" />
-                            Generating Report…
+                        <div className="report-status-block">
+                            <div className="report-status-text">
+                                Generating Report… {reportProgress}%
+                            </div>
+                            <div className="report-progress">
+                                <div
+                                    className="report-progress-fill"
+                                    style={{ width: `${reportProgress}%` }}
+                                />
+                            </div>
                         </div>
                     )}
 

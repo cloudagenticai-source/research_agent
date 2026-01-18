@@ -5,7 +5,7 @@ import memory_vector
 import memory_truth
 import router
 
-def generate_report(topic: str, max_episodes: int = 5, max_facts: int = 15, session_id: str = None) -> str:
+def generate_report(topic: str, max_episodes: int = 5, max_facts: int = 15, session_id: str = None, on_status: callable = None) -> str:
     """
     Generate a cited research report based on stored memories.
     
@@ -13,18 +13,25 @@ def generate_report(topic: str, max_episodes: int = 5, max_facts: int = 15, sess
         topic: The research topic.
         max_episodes: Maximum number of episodic memories to include in context.
         max_facts: Maximum number of semantic facts to include in context.
+        on_status: Optional callback for status updates.
         
     Returns:
         str: The generated report text.
     """
     
+    def _log_status(msg: str):
+        print(msg)
+        if on_status:
+            on_status(msg)
+
     # 1. Initialize
+    _log_status("[STATUS] Initializing report writer resources...")
     memory_truth.init_db()
     vm = memory_vector.VectorMemory()
     openai_client = OpenAI()
     
     # 2. Retrieve Context
-    print(f"Retrieving memory context for report on: {topic}")
+    _log_status(f"[STATUS] Retrieving memory context for research topic: {topic}")
     context = router.retrieve_router(vm, topic, k_epi=max_episodes, k_sem=max_facts)
     
     # 3. Strict Context Assembly (Source of Truth: SQLite)
@@ -37,6 +44,7 @@ def generate_report(topic: str, max_episodes: int = 5, max_facts: int = 15, sess
         return "No session found for this topic."
 
     # Fetch ALL episodes for this topic AND session from Truth Store
+    _log_status("[STATUS] Analyzing and ranking episodic memories...")
     topic_episodes = memory_truth.get_episodes_by_topic_and_session(topic, session_id)
     
     # 4. Ranking & Selection
@@ -95,6 +103,7 @@ def generate_report(topic: str, max_episodes: int = 5, max_facts: int = 15, sess
     
     session_facts = memory_truth.get_facts_by_topic_and_session(topic, session_id)
     session_fact_map = {f['id']: f for f in session_facts}
+    _log_status("[STATUS] Analyzing and ranking semantic facts...")
     
     final_facts = []
     seen_fact_ids = set()
@@ -130,6 +139,7 @@ def generate_report(topic: str, max_episodes: int = 5, max_facts: int = 15, sess
          return "No topic-scoped ingested sources available to generate a cited report for this topic."
 
     # 6. Assemble Context Pack
+    _log_status("[STATUS] Assembling context for LLM generation...")
     
     # Format Skills
     skill_ids = context.get('procedural', {}).get('ids', [])
@@ -186,7 +196,7 @@ def generate_report(topic: str, max_episodes: int = 5, max_facts: int = 15, sess
     )
 
     # 6. Generate with LLM
-    print("Generating report with LLM...")
+    _log_status("[STATUS] Generating report via LLM (this may take 5-10 seconds)...")
     try:
         response = openai_client.chat.completions.create(
             model="gpt-4o",
@@ -199,6 +209,7 @@ def generate_report(topic: str, max_episodes: int = 5, max_facts: int = 15, sess
         report = response.choices[0].message.content
         
         # Post-processing: Validate Citations
+        _log_status("[STATUS] Validating citations and internal links...")
         # Pass 1: Handle Markdown links [text](url)
         # We find all markdown links and check if the URL is allowed.
         md_link_pattern = r'\[([^\]]+)\]\((http[^)]+)\)'
@@ -283,6 +294,7 @@ def generate_report(topic: str, max_episodes: int = 5, max_facts: int = 15, sess
         else:
             report += f"\n\n{ref_header}\n\n{references_content}"
 
+        _log_status("[STATUS] Report generation complete.")
         return report
     except Exception as e:
         return f"Error generating report: {str(e)}"
