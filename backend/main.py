@@ -84,6 +84,24 @@ async def event_generator(topic: str, mode: str = "research") -> AsyncGenerator[
                         "percent": 0.0
                     }
                 }
+
+                # Generate Report synchronously in this thread to allow log streaming
+                try:
+                    def report_status_cb(msg):
+                        q.put({"type": "log", "line": msg})
+
+                    if session_id:
+                        final_report = report_writer.generate_report(
+                            topic, 
+                            session_id=session_id, 
+                            on_status=report_status_cb
+                        )
+                    else:
+                        final_report = "Error: No session ID available to generate report."
+                except Exception as e:
+                    final_report = f"Error generating report: {str(e)}"
+                
+                trace["report_content"] = final_report
             else:
                 trace = research_agent.run_research(topic, max_sources=5, on_event=on_event)
             
@@ -130,15 +148,7 @@ async def event_generator(topic: str, mode: str = "research") -> AsyncGenerator[
              final_summary = ""
              
              if mode == "report":
-                 # call report_writer
-                 try:
-                     session_id = trace.get("session_id")
-                     if session_id:
-                         final_summary = report_writer.generate_report(topic, session_id=session_id)
-                     else:
-                         final_summary = "Error: No session ID available to generate report."
-                 except Exception as e:
-                     final_summary = f"Error generating report: {str(e)}"
+                 final_summary = trace.get("report_content", "Error: Report content missing.")
              else:
                  # Standard Research Summary Logic
                  # Priority 1: Compressed Summaries
