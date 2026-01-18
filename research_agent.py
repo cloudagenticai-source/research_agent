@@ -267,7 +267,7 @@ def _retrieve_context(vm, topic, on_event: Optional[Callable[[str], None]] = Non
     context = router.retrieve_router(vm, topic)
     return context
 
-def _select_skill_and_policy(context, max_sources, on_event: Optional[Callable[[str], None]] = None):
+def _select_skill_and_policy(context, max_sources, execution_policy_override: Optional[dict] = None, on_event: Optional[Callable[[str], None]] = None):
     # 3. Planning & Policy
     active_policy = {
         "freshness_days": 180,
@@ -297,6 +297,11 @@ def _select_skill_and_policy(context, max_sources, on_event: Optional[Callable[[
 
     else:
         _emit(on_event, "No specific skill found, proceeding with general research.")
+        
+    # Apply Runtime Overrides (e.g., from Report Mode)
+    if execution_policy_override:
+        _emit(on_event, f"Applying Policy Overrides: {execution_policy_override}")
+        active_policy.update(execution_policy_override)
         
     # Apply Overrides
     max_sources_after_policy = active_policy.get("max_sources", max_sources)
@@ -654,14 +659,14 @@ def _attach_compressed_summaries(openai_client, trace, topic, on_event: Optional
 
 # --- MAIN ORCHESTRATOR ---
 
-def run_research(topic: str, max_sources: int = 5, on_event: Optional[Callable[[str], None]] = None) -> dict:
+def run_research(topic: str, max_sources: int = 5, execution_policy_override: Optional[dict] = None, on_event: Optional[Callable[[str], None]] = None) -> dict:
     """
     Orchestrate the research process.
     
     Args:
         topic: Research topic to investigate.
         max_sources: Maximum number of sources to fetch and ingest.
-        
+        execution_policy_override: Optional dictionary to enforce policy settings (e.g., disable web).
         on_event: Optional callback for streaming logs.
     Returns:
         dict: Execution trace including skill, subquestions, sources, and IDs.
@@ -695,7 +700,12 @@ def run_research(topic: str, max_sources: int = 5, on_event: Optional[Callable[[
     context = _retrieve_context(vm, topic, on_event=on_event)
     
     # 3. Policy & Skill
-    selected_skill, active_policy, max_sources = _select_skill_and_policy(context, max_sources, on_event=on_event)
+    selected_skill, active_policy, max_sources = _select_skill_and_policy(
+        context, 
+        max_sources, 
+        execution_policy_override=execution_policy_override, 
+        on_event=on_event
+    )
     trace["selected_skill"] = selected_skill
     trace["execution_policy"] = active_policy
     
